@@ -131,84 +131,99 @@ jobs:
           sudo apt-get update && sudo apt-get install setools lzip qemu-utils wine winetricks patchelf attr
           wget -qO- "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/archive/$GITHUB_REF.tar.gz" | sudo tar --wildcards -zxvf- -C ~ --strip-component=2 '*/wine/*' '*/linker/*'
           winetricks msxml6
+      # store.rg-adguard.net is no longer reliable since WSA EOL (Mar 2025).
+      # VCLibs: stable aka.ms alias | UI.Xaml: pinned 2.8.6 from NuGet
+      # WSA: latest .Msixbundle from MustardChef/WSAPackages via GitHub API
       - name: Download WSA
-        shell: python
+        env:
+          ARCH: ${{ matrix.arch }}
+          VCLIBS_URL: "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+          XAML_URL: "https://www.nuget.org/api/v2/package/Microsoft.UI.Xaml/2.8.6"
         run: |
-          import requests
-          from bs4 import BeautifulSoup
-          import re
-          import zipfile
+          echo "::group::Downloading VCLibs"
+          wget -q "$VCLIBS_URL" -O vclibs.appx
+          echo "::endgroup::"
+
+          echo "::group::Downloading UI.Xaml"
+          wget -q "$XAML_URL" -O xaml.nupkg
+          unzip -p xaml.nupkg "tools/AppX/x64/Release/Microsoft.UI.Xaml.2.8.appx" > xaml.appx
+          echo "::endgroup::"
+
+          echo "::group::Downloading WSA"
+          WSA_URL=$(curl -s https://api.github.com/repos/MustardChef/WSAPackages/releases/latest \
+            | python3 -c "
+          import sys, json
+          assets = json.load(sys.stdin)['assets']
+          url = next(
+              (a['browser_download_url'] for a in assets
+               if a['name'].lower().endswith('.msixbundle')),
+              None
+          )
+          if not url:
+              print('ERROR: No .msixbundle asset found in latest WSAPackages release', file=sys.stderr)
+              sys.exit(1)
+          print(url)
+          ")
+          if [ $? -ne 0 ]; then
+            echo "::error::Failed to find WSA download URL"
+            exit 1
+          fi
+          echo "WSA URL: $WSA_URL"
+          wget -q "$WSA_URL" -O wsa.zip
+          echo "::endgroup::"
+
+          echo "::group::Extracting WSA"
+          python3 - <<'EOF'
           import os
-          import urllib.request
+          import zipfile
 
-          arch = "${{ matrix.arch }}"
-
-          #release_type_map = {"retail": "Retail", "release preview": "RP", "insider slow": "WIS", "insider fast": "WIF"}
-          #release_type_map = "WIS"
-          #release_type = release_type_map["${{ matrix.release_type }}"] if "${{ matrix.release_type }}" != "" else "Retail"
-          release_type = "WIS"
-          res = requests.post("https://store.rg-adguard.net/api/GetFiles", f"type=CategoryId&url=858014f3-3934-4abe-8078-4aa193e74ca8&ring={release_type}&lang=en-US", headers={
-              "content-type": "application/x-www-form-urlencoded"
-          }, verify=False) # source site has expired cert
-
-          html = BeautifulSoup(res.content, "lxml")
-
-          a = html.find("a", string=re.compile(f"Microsoft\.UI\.Xaml\..*_{arch}_.*\.appx"))
-          link = a["href"]
-          print(f"downloading link: {link}", flush=True)
-          out_file = "xaml.appx"
-          if not os.path.isfile(out_file):
-              urllib.request.urlretrieve(link, out_file)
-
-          a = html.find("a", string=re.compile(f"Microsoft\.VCLibs\..*_{arch}_.*\.appx"))
-          link = a["href"]
-          print(f"downloading link: {link}", flush=True)
-          out_file = "vclibs.appx"
-          if not os.path.isfile(out_file):
-              urllib.request.urlretrieve(link, out_file)
-
-          a = html.find("a", string=re.compile("MicrosoftCorporationII\.WindowsSubsystemForAndroid_.*\.msixbundle"))
-          link = a["href"]
-          print(f"downloading link: {link}", flush=True)
+          arch     = os.environ["ARCH"]
           out_file = "wsa.zip"
-          if not os.path.isfile(out_file):
-              urllib.request.urlretrieve(link, out_file)
-
           zip_name = ""
-          with zipfile.ZipFile(out_file) as zip:
-              for f in zip.filelist:
-                  if arch in f.filename.lower():
-                      zip_name = f.filename
+
+          with zipfile.ZipFile(out_file) as bundle:
+              for entry in bundle.filelist:
+                  name_lower = entry.filename.lower()
+
+                  if arch in name_lower and name_lower.endswith((".msix", ".zip")):
+                      zip_name = entry.filename
                       if not os.path.isfile(zip_name):
-                          print(f"unzipping to {zip_name}", flush=True)
-                          zip.extract(f)
-                          ver_no = zip_name.split("_")
-                          ver = ver_no[1]
-                          with open(os.environ['GITHUB_ENV'], 'a') as g:
-                              g.write(f'WSA_VER={ver}\n')
-                          rel = ver_no[3].split(".")
-                          rell = str(rel[0])
-                          with open(os.environ['GITHUB_ENV'], 'a') as g:
-                              g.write(f'WSA_REL={rell}\n')
-                  if 'language' in f.filename.lower() or 'scale' in f.filename.lower():
-                      name = f.filename.split("-", 1)[1].split(".")[0]
-                      zip.extract(f)
-                      with zipfile.ZipFile(f.filename) as l:
-                          for g in l.filelist:
-                              if g.filename == 'resources.pri':
-                                  g.filename = f'{name}.pri'
-                                  l.extract(g, 'pri')
-                                  print(f"extract resource pack {g.filename}")
-                              elif g.filename == 'AppxManifest.xml':
-                                  g.filename = f'{name}.xml'
-                                  l.extract(g, 'xml')
+                          print(f"Extracting inner package: {zip_name}", flush=True)
+                          bundle.extract(entry)
+                          parts = zip_name.split("_")
+                          ver = parts[1] if len(parts) > 1 else "2311.40000.10.0"
+                          rel = parts[3].split(".")[0] if len(parts) > 3 else "2311"  # major build number
+                          with open(os.environ["GITHUB_ENV"], "a") as env:
+                              env.write(f"WSA_VER={ver}\n")
+                              env.write(f"WSA_REL={rel}\n")
 
-          with zipfile.ZipFile(zip_name) as zip:
+                  if "language" in name_lower or "scale" in name_lower:
+                      pack_name = entry.filename.split("-", 1)[1].split(".")[0]
+                      bundle.extract(entry)
+                      with zipfile.ZipFile(entry.filename) as pack:
+                          for item in pack.filelist:
+                              if item.filename == "resources.pri":
+                                  item.filename = f"{pack_name}.pri"
+                                  pack.extract(item, "pri")
+                                  print(f"Extracted resource pack: {item.filename}", flush=True)
+                              elif item.filename == "AppxManifest.xml":
+                                  item.filename = f"{pack_name}.xml"
+                                  pack.extract(item, "xml")
+
+          if not zip_name:
+              print("ERROR: No architecture-specific package found in WSA bundle", flush=True)
+              import sys
+              sys.exit(1)
+
+          source = zip_name
+          with zipfile.ZipFile(source) as pkg:
               if not os.path.isdir(arch):
-                  print(f"unzipping from {zip_name}", flush=True)
-                  zip.extractall(arch)
+                  print(f"Extracting {source} -> {arch}/", flush=True)
+                  pkg.extractall(arch)
 
-          print("done", flush=True)
+          print("WSA extraction complete.", flush=True)
+          EOF
+          echo "::endgroup::"
       - name: Download Magisk
         shell: python
         run: |
