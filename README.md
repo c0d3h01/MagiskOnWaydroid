@@ -1,5 +1,7 @@
 # Gapps + Magisk on Waydroid 11
 
+[![Modify Waydroid](https://github.com/c0d3h01/MagiskOnWaydroid/actions/workflows/magisk.yml/badge.svg?branch=main)](https://github.com/c0d3h01/MagiskOnWaydroid/actions/workflows/magisk.yml)
+
 ![Screenshot from 2022-05-31 21-33-25](https://user-images.githubusercontent.com/28628331/171199638-1260676c-8d0c-4c56-9ca6-65950ed5374a.png)
 ![image](https://github.com/pagkly/MagiskOnWaydroid/assets/28628331/29a2b8f5-d9a6-41bb-ae82-8cba412c0bd0)
 
